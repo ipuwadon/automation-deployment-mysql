@@ -1,13 +1,13 @@
 name: MySQL Deployment
 
 on:
-	push:
-		branches:
-			- main
+  push:
+    branches:
+      - main
 
 jobs:
-	deploy:
-		runs-on: self-hosted
-		steps:
-			- name: Echo message
-			  run: echo "GitHub Actions runner is working"
+  deploy:
+    runs-on: self-hosted
+    steps:
+      - name: Echo message
+        run: echo "GitHub Actions runner is working"
