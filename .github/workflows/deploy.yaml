@@ -1,4 +1,4 @@
-name: MySQL Deployment
+name: MySQL Auto Deployment
 
 on:
   push:
