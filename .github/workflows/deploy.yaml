@@ -9,6 +9,6 @@ jobs:
   deploy:
     runs-on: self-hosted
     steps:
-  	  - name: Echo message
+      - name: Echo message
         run: echo GitHub Actions runner is working
-    		shell: cmd
+        shell: cmd
