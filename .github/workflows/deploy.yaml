@@ -1,4 +1,4 @@
-name: MySQL Auto Deployment
+name: MySQL Deployment
 
 on:
   push:
@@ -9,6 +9,9 @@ jobs:
   deploy:
     runs-on: self-hosted
     steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
       - name: Echo message
-        run: echo GitHub Actions runner is working
-        shell: cmd
+        run: echo "GitHub Actions runner is working"
+        shell: powershell
