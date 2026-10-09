@@ -10,4 +10,4 @@ jobs:
     runs-on: self-hosted
     steps:
       - name: Echo message
-  			run: echo GitHub Actions runner is working
+        run: echo "GitHub Actions runner is working"
