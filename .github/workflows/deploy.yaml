@@ -1,17 +1,11 @@
-name: MySQL Deployment
-
+name: Test
 on:
   push:
-    branches:
-      - main
+    branches: [main]
 
 jobs:
-  deploy:
+  test:
     runs-on: self-hosted
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-      
-      - name: Echo message
-        run: echo "GitHub Actions runner is working"
+      - run: echo "hello"
         shell: powershell
