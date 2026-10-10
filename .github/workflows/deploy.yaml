@@ -9,5 +9,5 @@ jobs:
   deploy:
     runs-on: self-hosted
     steps:
-      - name: Echo message
-        run: echo "GitHub Actions runner verification"
+      - name: Verification
+        run: echo "GitHub Actions Runner"
