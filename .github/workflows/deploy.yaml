@@ -8,6 +8,28 @@ on:
 jobs:
   deploy:
     runs-on: self-hosted
+
+    evn:
+      DB_HOST: ${{ secrets.DB_HOST }}
+      DB_USER: ${{ secrets.DB_USER }}
+      DB_PASS: ${{ secrets.DB_PASS }}
+
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
       - name: Verification
-        run: echo "GitHub Actions Runner"
+        run: echo "GitHub Actions Runner is working"
+
+      - name: Install MySQL client
+        run: sudo apt-get install -y mysql-client
+
+      - name: Deploy schema
+        run: |
+          echo "Deploying MySQL schema..."
+          mysql -h $DB_HOST -u $DB_USER -p$DB_PASS < scripts/schema.sql
+
+      - name: Run migrations
+        run: |
+          echo "Running migrations..."
+          mysql -h $DB_HOST -u $DB_USER -p$DB_PASS < scripts/migrations.sql
