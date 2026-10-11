@@ -1,11 +1,12 @@
 name: MySQL Deployment
+
 on:
-  pull_request:
+  push:
     branches:
       - main
 
 jobs:
-  deploy-dev:
+  deploy:
     runs-on: self-hosted
 
     env:
@@ -14,39 +15,20 @@ jobs:
       DB_PASS: ${{ secrets.DB_PASS }}
 
     steps:
-      - uses: actions/checkout@v5
+      - name: Checkout repository
+        uses: actions/checkout@v5
 
-      - name: Detect changed files
-        id: changes
-        shell: powershell
+      - name: Verification
+        run: echo "GitHub Actions Runner is working"
+
+      - name: Deploy schema
         run: |
-          git fetch origin $env:GITHUB_BASE_REF
-          $changed = git diff --name-only origin/$env:GITHUB_BASE_REF $env:GITHUB_HEAD_REF
-          $changed | Out-File changed_files.txt
-          Get-Content changed_files.txt
-
-      - name: Run rollback scripts
+          echo "Deploying MySQL"
+          mysql -h %DB_HOST% -u %DB_USER% -p%DB_PASS% < scripts/schema.sql
         shell: cmd
-        run: |
-          for /F %%f in ('findstr /R "feature.*rollback.*\.sql" changed_files.txt') do (
-            echo Running rollback %%f
-            mysql -h %DB_HOST% -u %DB_USER% -p%DB_PASS% %DB_NAME% < %%f
-          )
 
-      - name: Run release scripts
-        shell: cmd
+      - name: Run migrations
         run: |
-          for /F %%f in ('findstr /R "tables.*\.sql" changed_files.txt') do mysql -h %DB_HOST% -u %DB_USER% -p%DB_PASS% %DB_NAME% < %%f
-          for /F %%f in ('findstr /R "views.*\.sql" changed_files.txt') do mysql -h %DB_HOST% -u %DB_USER% -p%DB_PASS% %DB_NAME% < %%f
-          for /F %%f in ('findstr /R "indexes.*\.sql" changed_files.txt') do mysql -h %DB_HOST% -u %DB_USER% -p%DB_PASS% %DB_NAME% < %%f
-          for /F %%f in ('findstr /R "procedures.*\.sql" changed_files.txt') do mysql -h %DB_HOST% -u %DB_USER% -p%DB_PASS% %DB_NAME% < %%f
-          for /F %%f in ('findstr /R "triggers.*\.sql" changed_files.txt') do mysql -h %DB_HOST% -u %DB_USER% -p%DB_PASS% %DB_NAME% < %%f
-          for /F %%f in ('findstr /R "events.*\.sql" changed_files.txt') do mysql -h %DB_HOST% -u %DB_USER% -p%DB_PASS% %DB_NAME% < %%f
-
-      - name: Run test scripts
+          echo "Running migrations"
+          mysql -h %DB_HOST% -u %DB_USER% -p%DB_PASS% < scripts/migrations.sql
         shell: cmd
-        run: |
-          for /F %%f in ('findstr /R "feature.*test.*\.sql" changed_files.txt') do (
-            echo Running test %%F
-            mysql -h %DB_HOST% -u %DB_USER% -p%DB_PASS% %DB_NAME% < %%f 
-          )

@@ -13,65 +13,55 @@ jobs:
       DB_HOST: ${{ secrets.DB_HOST }}
       DB_USER: ${{ secrets.DB_USER }}
       DB_PASS: ${{ secrets.DB_PASS }}
-      DB_NAME: ${{ secrets.DB_USER }}
 
     steps:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
-      - name: Detect and run changed scripts
+      - name: Detect changed files
+        id: changes
         shell: powershell
         run: |
-          # Get changed files
-          $baseRef = $env:GITHUB_BASE_REF
-          $headRef = $env:GITHUB_HEAD_REF
-          
-          Write-Host "Base branch: $baseRef"
-          Write-Host "Head branch: $headRef"
-          
-          git fetch origin $baseRef
-          $changed = git diff --name-only origin/$baseRef $headRef
-          
+          git fetch origin $env:GITHUB_BASE_REF
+          $changed = git diff --name-only origin/$env:GITHUB_BASE_REF $env:GITHUB_HEAD_REF
+          $changed | Out-File -FilePath changed_files.txt -Encoding ASCII
           Write-Host "=== Changed files ==="
-          $changed | ForEach-Object { Write-Host $_ }
+          Get-Content changed_files.txt
           Write-Host "=== End ==="
-          
-          # Filter files
-          $rollbackFiles = $changed | Where-Object { $_ -match "rollback/" }
-          $releaseFiles = $changed | Where-Object { $_ -match "tables/" }
-          $testFiles = $changed | Where-Object { $_ -match "test/" }
-          
-          Write-Host "Rollback files: $($rollbackFiles.Count)"
-          Write-Host "Release files: $($releaseFiles.Count)"
-          Write-Host "Test files: $($testFiles.Count)"
-          
-          # Run rollback scripts
-          if ($rollbackFiles) {
-            foreach ($file in $rollbackFiles) {
-              Write-Host "Running rollback: $file"
-              Get-Content $file | & mysql -h $env:DB_HOST -u $env:DB_USER -p$env:DB_PASS $env:DB_NAME
-            }
-          } else {
-            Write-Host "No rollback scripts detected"
-          }
-          
-          # Run release scripts
-          if ($releaseFiles) {
-            foreach ($file in $releaseFiles) {
-              Write-Host "Running release: $file"
-              Get-Content $file | & mysql -h $env:DB_HOST -u $env:DB_USER -p$env:DB_PASS $env:DB_NAME
-            }
-          } else {
-            Write-Host "No release scripts detected"
-          }
-          
-          # Run test scripts
-          if ($testFiles) {
-            foreach ($file in $testFiles) {
-              Write-Host "Running test: $file"
-              Get-Content $file | & mysql -h $env:DB_HOST -u $env:DB_USER -p$env:DB_PASS $env:DB_NAME
-            }
-          } else {
-            Write-Host "No test scripts detected"
-          }
+
+      - name: Run rollback scripts
+        shell: cmd
+        run: |
+          findstr /C:"rollback/" changed_files.txt > rollback_files.txt 2>nul || (
+            echo "No rollback scripts detected"
+            exit /b 0
+          )
+          for /F %%f in (rollback_files.txt) do (
+            echo Running rollback: %%f
+            mysql -h %DB_HOST% -u %DB_USER% -p%DB_PASS% < %%f
+          )
+
+      - name: Run release scripts
+        shell: cmd
+        run: |
+          findstr /C:"tables/" changed_files.txt > release_files.txt 2>nul || (
+            echo "No release scripts detected"
+            exit /b 0
+          )
+          for /F %%f in (release_files.txt) do (
+            echo Running release: %%f
+            mysql -h %DB_HOST% -u %DB_USER% -p%DB_PASS% < %%f
+          )
+
+      - name: Run test scripts
+        shell: cmd
+        run: |
+          findstr /C:"test/" changed_files.txt > test_files.txt 2>nul || (
+            echo "No test scripts detected"
+            exit /b 0
+          )
+          for /F %%f in (test_files.txt) do (
+            echo Running test: %%f
+            mysql -h %DB_HOST% -u %DB_USER% -p%DB_PASS% < %%f
+          )
