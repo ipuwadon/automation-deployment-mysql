@@ -20,49 +20,59 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Detect changed files
-        id: changes
+      - name: Detect and run changed scripts
         shell: powershell
         run: |
           git fetch origin $env:GITHUB_BASE_REF
           $changed = git diff --name-only origin/$env:GITHUB_BASE_REF $env:GITHUB_HEAD_REF
-          $changed | Out-File -FilePath changed_files.txt -Encoding ASCII
+
           Write-Host "=== Changed files ==="
-          Get-Content changed_files.txt
+          $changed | ForEach-Object { Write-Host $_ }
           Write-Host "=== End ==="
 
-      - name: Run rollback scripts
-        shell: cmd
-        run: |
-          findstr /R /C:"rollback/" changed_files.txt > rollback_files.txt 2>nul || (
-            echo "No rollback scripts detected"
-            exit /b 0
-          )
-          for /F "usebackq delims=" %%f in (rollback_files.txt) do (
-            echo Running rollback: %%f
-            mysql -h %DB_HOST% -u %DB_USER% -p%DB_PASS% %DB_NAME% < "%%f"
-          )
+          $rollbackFiles = $changed | Where-Object {
+            $_ -like "*/rollback/*" -or $_ -like "rollback/*"
+          }
 
-      - name: Run release scripts
-        shell: cmd
-        run: |
-          findstr /R /C:"tables/" changed_files.txt > release_files.txt 2>nul || (
-            echo "No release scripts detected"
-            exit /b 0
-          )
-          for /F "usebackq delims=" %%f in (release_files.txt) do (
-            echo Running release: %%f
-            mysql -h %DB_HOST% -u %DB_USER% -p%DB_PASS% %DB_NAME% < "%%f"
-          )
+          $releaseFiles = $changed | Where-Object {
+            $_ -like "*/tables/*" -or $_ -like "tables/*"
+          }
 
-      - name: Run test scripts
-        shell: cmd
-        run: |
-          findstr /R /C:"test/" changed_files.txt > test_files.txt 2>nul || (
-            echo "No test scripts detected"
-            exit /b 0
-          )
-          for /F "usebackq delims=" %%f in (test_files.txt) do (
-            echo Running test: %%f
-            mysql -h %DB_HOST% -u %DB_USER% -p%DB_PASS% %DB_NAME% < "%%f"
-          )
+          $testFiles = $changed | Where-Object {
+            (
+              $_ -like "*/test/*" -or $_ -like "test/*"
+            ) -and
+            $_ -notlike "*/rollback/*" -and
+            $_ -notlike "rollback/*"
+          }
+
+          Write-Host "Rollback files: $($rollbackFiles.Count)"
+          Write-Host "Release files: $($releaseFiles.Count)"
+          Write-Host "Test files: $($testFiles.Count)"
+
+          if ($rollbackFiles) {
+            foreach ($file in $rollbackFiles) {
+              Write-Host "Running rollback: $file"
+              Get-Content $file | & mysql -h $env:DB_HOST -u $env:DB_USER -p$env:DB_PASS $env:DB_NAME
+            }
+          } else {
+            Write-Host "No rollback scripts detected"
+          }
+
+          if ($releaseFiles) {
+            foreach ($file in $releaseFiles) {
+              Write-Host "Running release: $file"
+              Get-Content $file | & mysql -h $env:DB_HOST -u $env:DB_USER -p$env:DB_PASS $env:DB_NAME
+            }
+          } else {
+            Write-Host "No release scripts detected"
+          }
+
+          if ($testFiles) {
+            foreach ($file in $testFiles) {
+              Write-Host "Running test: $file"
+              Get-Content $file | & mysql -h $env:DB_HOST -u $env:DB_USER -p$env:DB_PASS $env:DB_NAME
+            }
+          } else {
+            Write-Host "No test scripts detected"
+          }
