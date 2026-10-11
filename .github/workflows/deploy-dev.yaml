@@ -20,31 +20,18 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Debug - Check git branches
-        shell: powershell
-        run: |
-          Write-Host "Current branch:"
-          git rev-parse --abbrev-ref HEAD
-          Write-Host ""
-          Write-Host "Base ref: $env:GITHUB_BASE_REF"
-          Write-Host "Head ref: $env:GITHUB_HEAD_REF"
-          Write-Host ""
-          Write-Host "Comparing:"
-          Write-Host "git diff --name-only origin/$env:GITHUB_BASE_REF $env:GITHUB_HEAD_REF"
-          Write-Host ""
-          Write-Host "Actual git diff output:"
-          git diff --name-only origin/$env:GITHUB_BASE_REF $env:GITHUB_HEAD_REF
-          Write-Host ""
-          Write-Host "Files in the feature branch:"
-          git ls-files | findstr /I "tables"
-
       - name: Detect changed files
-        id: changes
         shell: powershell
         run: |
-          git fetch origin $env:GITHUB_BASE_REF
-          $changed = git diff --name-only origin/$env:GITHUB_BASE_REF $env:GITHUB_HEAD_REF
+          $baseSha = "${{ github.event.pull_request.base.sha }}"
+          $headSha = "${{ github.event.pull_request.head.sha }}"
+
+          Write-Host "Base SHA: $baseSha"
+          Write-Host "Head SHA: $headSha"
+
+          $changed = git diff --name-only $baseSha $headSha
           $changed | Out-File -FilePath changed_files.txt -Encoding ASCII
+
           Write-Host "=== Changed files ==="
           Get-Content changed_files.txt
           Write-Host "=== End ==="
