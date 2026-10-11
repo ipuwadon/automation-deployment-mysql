@@ -43,16 +43,6 @@ jobs:
       - name: Run release scripts
         shell: cmd
         run: |
-          findstr /R "tables.*\.sql" changed_files.txt > release_files.txt
-          if %ERRORLEVEL% NEQ 0 (
-            echo "No release scripts detected"
-          ) else (
-            for /F %%f in (release_files.txt) do (
-              echo Running release %%f
-              mysql -h %DB_HOST% -u %DB_USER% -p%DB_PASS% %DB_NAME% < %%f
-            )
-          )
-
           findstr /C:"tables" changed_files.txt > release_files.txt
           if %ERRORLEVEL% NEQ 0 (
             echo "No release scripts detected"
