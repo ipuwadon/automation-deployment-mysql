@@ -8,7 +8,7 @@ on:
 jobs:
   deploy-dev:
     runs-on: self-hosted
-    
+
     env:
       DB_HOST: ${{ secrets.DB_HOST }}
       DB_USER: ${{ secrets.DB_USER }}
@@ -30,9 +30,14 @@ jobs:
       - name: Run rollback scripts
         shell: cmd
         run: |
-          for /F %%f in ('findstr /R "feature.*rollback.*\.sql" changed_files.txt') do (
-            echo Running rollback %%f
-            mysql -h %DB_HOST% -u %DB_USER% -p%DB_PASS% %DB_NAME% < %%f
+          findstr /C:"rollback" changed_files.txt > rollback_files.txt
+          if %ERRORLEVEL% NEQ 0 (
+            echo "No rollback scripts detected"
+          ) else (
+            for /F %%f in (rollback_files.txt) do (
+              echo Running rollback %%f
+              mysql -h %DB_HOST% -u %DB_USER% -p%DB_PASS% %DB_NAME% < %%f
+            )
           )
 
       - name: Run release scripts
