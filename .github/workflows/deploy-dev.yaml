@@ -13,6 +13,7 @@ jobs:
       DB_HOST: ${{ secrets.DB_HOST }}
       DB_USER: ${{ secrets.DB_USER }}
       DB_PASS: ${{ secrets.DB_PASS }}
+      DB_NAME: ${{ secrets.DB_NAME }}
 
     steps:
       - uses: actions/checkout@v5
@@ -39,7 +40,7 @@ jobs:
           )
           for /F %%f in (rollback_files.txt) do (
             echo Running rollback: %%f
-            mysql -h %DB_HOST% -u %DB_USER% -p%DB_PASS% < %%f
+            mysql -h %DB_HOST% -u %DB_USER% -p%DB_PASS% %DB_NAME% < %%f
           )
 
       - name: Run release scripts
@@ -51,7 +52,7 @@ jobs:
           )
           for /F %%f in (release_files.txt) do (
             echo Running release: %%f
-            mysql -h %DB_HOST% -u %DB_USER% -p%DB_PASS% < %%f
+            mysql -h %DB_HOST% -u %DB_USER% -p%DB_PASS% %DB_NAME% < %%f
           )
 
       - name: Run test scripts
@@ -63,5 +64,5 @@ jobs:
           )
           for /F %%f in (test_files.txt) do (
             echo Running test: %%f
-            mysql -h %DB_HOST% -u %DB_USER% -p%DB_PASS% < %%f
+            mysql -h %DB_HOST% -u %DB_USER% -p%DB_PASS% %DB_NAME% < %%f
           )
