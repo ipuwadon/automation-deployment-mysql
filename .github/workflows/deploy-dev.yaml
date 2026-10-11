@@ -1,4 +1,5 @@
 name: MySQL Deployment - DEV
+
 on:
   pull_request:
     branches:
@@ -7,46 +8,47 @@ on:
 jobs:
   deploy-dev:
     runs-on: self-hosted
+    
+    env:
+      DB_HOST: ${{ secrets.DB_HOST }}
+      DB_USER: ${{ secrets.DB_USER }}
+      DB_PASS: ${{ secrets.DB_PASS }}
+      DB_NAME: ${{ secrets.DB_USER }}   # schema name = user name
 
-  env:
-    DB_HOST: ${{ secrets.DB_HOST }}
-    DB_USER: ${{ secrets.DB_USER }}
-    DB_PASS: ${{ secrets.DB_PASS }}
+    steps:
+      - uses: actions/checkout@v5
 
-  steps:
-    - uses: actions/checkout@v5
+      - name: Detect changed files
+        id: changes
+        shell: powershell
+        run: |
+          git fetch origin $env:GITHUB_BASE_REF
+          $changed = git diff --name-only origin/$env:GITHUB_BASE_REF $env:GITHUB_HEAD_REF
+          $changed | Out-File changed_files.txt
+          Get-Content changed_files.txt
 
-    - name: Detect changed files
-      id: changes
-      shell: powershell
-      run: |
-        git fetch origin $env:GITHUB_BASE_REF
-        $changed = git diff --name-only origin/$env:GITHUB_BASE_REF $env:GITHUB_HEAD_REF
-        $changed | Out-File changed_files.txt
-        Get-Content changed_files.txt
+      - name: Run rollback scripts
+        shell: cmd
+        run: |
+          for /F %%f in ('findstr /R "feature.*rollback.*\.sql" changed_files.txt') do (
+            echo Running rollback %%f
+            mysql -h %DB_HOST% -u %DB_USER% -p%DB_PASS% %DB_NAME% < %%f
+          )
 
-    - name: Run rollback scripts
-      shell: cmd
-      run: |
-        for /F %%f in ('findstr /R "feature.*rollback.*\.sql" changed_files.txt') do (
-          echo Running rollback %%f
-          mysql -h %DB_HOST% -u %DB_USER% -p%DB_PASS% %DB_NAME% < %%f
-        )
+      - name: Run release scripts
+        shell: cmd
+        run: |
+          for /F %%f in ('findstr /R "tables.*\.sql" changed_files.txt') do mysql -h %DB_HOST% -u %DB_USER% -p%DB_PASS% %DB_NAME% < %%f
+          for /F %%f in ('findstr /R "views.*\.sql" changed_files.txt') do mysql -h %DB_HOST% -u %DB_USER% -p%DB_PASS% %DB_NAME% < %%f
+          for /F %%f in ('findstr /R "indexes.*\.sql" changed_files.txt') do mysql -h %DB_HOST% -u %DB_USER% -p%DB_PASS% %DB_NAME% < %%f
+          for /F %%f in ('findstr /R "procedures.*\.sql" changed_files.txt') do mysql -h %DB_HOST% -u %DB_USER% -p%DB_PASS% %DB_NAME% < %%f
+          for /F %%f in ('findstr /R "triggers.*\.sql" changed_files.txt') do mysql -h %DB_HOST% -u %DB_USER% -p%DB_PASS% %DB_NAME% < %%f
+          for /F %%f in ('findstr /R "events.*\.sql" changed_files.txt') do mysql -h %DB_HOST% -u %DB_USER% -p%DB_PASS% %DB_NAME% < %%f
 
-    - name: Run release scripts
-      shell: cmd
-      run: |
-        for /F %%f in ('findstr /R "tables.*\.sql" changed_files.txt') do mysql -h %DB_HOST% -u %DB_USER% -p%DB_PASS% %DB_NAME% < %%f
-        for /F %%f in ('findstr /R "views.*\.sql" changed_files.txt') do mysql -h %DB_HOST% -u %DB_USER% -p%DB_PASS% %DB_NAME% < %%f
-        for /F %%f in ('findstr /R "indexes.*\.sql" changed_files.txt') do mysql -h %DB_HOST% -u %DB_USER% -p%DB_PASS% %DB_NAME% < %%f
-        for /F %%f in ('findstr /R "procedures.*\.sql" changed_files.txt') do mysql -h %DB_HOST% -u %DB_USER% -p%DB_PASS% %DB_NAME% < %%f
-        for /F %%f in ('findstr /R "triggers.*\.sql" changed_files.txt') do mysql -h %DB_HOST% -u %DB_USER% -p%DB_PASS% %DB_NAME% < %%f
-        for /F %%f in ('findstr /R "events.*\.sql" changed_files.txt') do mysql -h %DB_HOST% -u %DB_USER% -p%DB_PASS% %DB_NAME% < %%f
-
-    - name: Run test scripts
-      shell: cmd
-      run: |
-        for /F %%f in ('findstr /R "feature.*test.*\.sql" changed_files.txt') do (
-          echo Running test %%F
-          mysql -h %DB_HOST% -u %DB_USER% -p%DB_PASS% %DB_NAME% < %%f 
-        )
+      - name: Run test scripts
+        shell: cmd
+        run: |
+          for /F %%f in ('findstr /R "feature.*test.*\.sql" changed_files.txt') do (
+            echo Running test %%f
+            mysql -h %DB_HOST% -u %DB_USER% -p%DB_PASS% %DB_NAME% < %%f
+          )
