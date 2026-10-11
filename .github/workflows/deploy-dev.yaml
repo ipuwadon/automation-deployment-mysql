@@ -37,7 +37,7 @@ jobs:
           $changed | ForEach-Object { Write-Host $_ }
           Write-Host "=== End ==="
           
-          # Filter and run scripts
+          # Filter files
           $rollbackFiles = $changed | Where-Object { $_ -match "rollback/" }
           $releaseFiles = $changed | Where-Object { $_ -match "tables/" }
           $testFiles = $changed | Where-Object { $_ -match "test/" }
@@ -50,7 +50,7 @@ jobs:
           if ($rollbackFiles) {
             foreach ($file in $rollbackFiles) {
               Write-Host "Running rollback: $file"
-              & mysql -h $env:DB_HOST -u $env:DB_USER -p$env:DB_PASS $env:DB_NAME < $file
+              Get-Content $file | & mysql -h $env:DB_HOST -u $env:DB_USER -p$env:DB_PASS $env:DB_NAME
             }
           } else {
             Write-Host "No rollback scripts detected"
@@ -60,7 +60,7 @@ jobs:
           if ($releaseFiles) {
             foreach ($file in $releaseFiles) {
               Write-Host "Running release: $file"
-              & mysql -h $env:DB_HOST -u $env:DB_USER -p$env:DB_PASS $env:DB_NAME < $file
+              Get-Content $file | & mysql -h $env:DB_HOST -u $env:DB_USER -p$env:DB_PASS $env:DB_NAME
             }
           } else {
             Write-Host "No release scripts detected"
@@ -70,7 +70,7 @@ jobs:
           if ($testFiles) {
             foreach ($file in $testFiles) {
               Write-Host "Running test: $file"
-              & mysql -h $env:DB_HOST -u $env:DB_USER -p$env:DB_PASS $env:DB_NAME < $file
+              Get-Content $file | & mysql -h $env:DB_HOST -u $env:DB_USER -p$env:DB_PASS $env:DB_NAME
             }
           } else {
             Write-Host "No test scripts detected"
