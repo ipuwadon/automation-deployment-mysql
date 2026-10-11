@@ -20,15 +20,37 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Debug - Show git diff output
+        shell: powershell
+        run: |
+          Write-Host "Base ref: $env:GITHUB_BASE_REF"
+          Write-Host "Head ref: $env:GITHUB_HEAD_REF"
+          Write-Host ""
+          Write-Host "Fetching base branch..."
+          git fetch origin $env:GITHUB_BASE_REF
+          Write-Host ""
+          Write-Host "Running git diff..."
+          git diff --name-only origin/$env:GITHUB_BASE_REF $env:GITHUB_HEAD_REF
+          Write-Host ""
+          Write-Host "All files in current branch:"
+          git ls-files
+
       - name: Detect and run changed scripts
         shell: powershell
         run: |
           git fetch origin $env:GITHUB_BASE_REF
           $changed = git diff --name-only origin/$env:GITHUB_BASE_REF $env:GITHUB_HEAD_REF
 
-          Write-Host "=== Changed files ==="
-          $changed | ForEach-Object { Write-Host $_ }
-          Write-Host "=== End ==="
+          Write-Host "=== Changed files count: $($changed.Count) ==="
+          if ($changed) {
+            $changed | ForEach-Object { 
+              Write-Host "File: '$_'"
+              Write-Host "Contains 'tables': $($_ -match 'tables')"
+              Write-Host "Contains 'rollback': $($_ -match 'rollback')"
+              Write-Host "Contains 'test': $($_ -match 'test')"
+              Write-Host ""
+            }
+          }
 
           $rollbackFiles = $changed | Where-Object { $_ -match "rollback" }
           $releaseFiles = $changed | Where-Object { $_ -match "tables" }
