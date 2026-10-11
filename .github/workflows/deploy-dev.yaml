@@ -24,7 +24,8 @@ jobs:
         run: |
           git fetch origin $env:GITHUB_BASE_REF
           $changed = git diff --name-only origin/$env:GITHUB_BASE_REF $env:GITHUB_HEAD_REF
-          $changed | Out-File changed_files.txt
+          # Save as UTF-8 without BOM so findstr can read it
+          $changed | Out-File -FilePath changed_files.txt -Encoding ASCII
           Get-Content changed_files.txt
 
       - name: Run rollback scripts
