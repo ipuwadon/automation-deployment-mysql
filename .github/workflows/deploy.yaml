@@ -23,12 +23,12 @@ jobs:
 
       - name: Deploy schema
         run: |
-          echo "Deploying MySQL schema..."
+          echo "Deploying MySQL"
           mysql -h %DB_HOST% -u %DB_USER% -p%DB_PASS% < scripts/schema.sql
         shell: cmd
 
       - name: Run migrations
         run: |
-          echo "Running migrations..."
+          echo "Running migrations"
           mysql -h %DB_HOST% -u %DB_USER% -p%DB_PASS% < scripts/migrations.sql
         shell: cmd
