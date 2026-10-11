@@ -30,21 +30,9 @@ jobs:
           $changed | ForEach-Object { Write-Host $_ }
           Write-Host "=== End ==="
 
-          $rollbackFiles = $changed | Where-Object {
-            $_ -like "*/rollback/*" -or $_ -like "rollback/*"
-          }
-
-          $releaseFiles = $changed | Where-Object {
-            $_ -like "*/tables/*" -or $_ -like "tables/*"
-          }
-
-          $testFiles = $changed | Where-Object {
-            (
-              $_ -like "*/test/*" -or $_ -like "test/*"
-            ) -and
-            $_ -notlike "*/rollback/*" -and
-            $_ -notlike "rollback/*"
-          }
+          $rollbackFiles = $changed | Where-Object { $_ -match "rollback" }
+          $releaseFiles = $changed | Where-Object { $_ -match "tables" }
+          $testFiles = $changed | Where-Object { $_ -match "test" -and $_ -notmatch "rollback" }
 
           Write-Host "Rollback files: $($rollbackFiles.Count)"
           Write-Host "Release files: $($releaseFiles.Count)"
