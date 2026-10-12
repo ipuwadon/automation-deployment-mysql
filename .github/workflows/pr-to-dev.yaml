@@ -33,6 +33,20 @@ jobs:
       - name: Execute driver/control files and their included SQLs
         shell: powershell
         run: |
+          function Clean-IncludedPath($p) {
+            if (-not $p) { return $p }
+            $s = $p.Trim()
+            # Remove leading quotes/backticks/spaces
+            while ($s.Length -gt 0 -and ($s[0] -eq '"' -or $s[0] -eq "'" -or $s[0] -eq "`" -or [char]::IsWhiteSpace($s[0]))) {
+              $s = $s.Substring(1)
+            }
+            # Remove trailing quotes/backticks/spaces
+            while ($s.Length -gt 0 -and ($s[-1] -eq '"' -or $s[-1] -eq "'" -or $s[-1] -eq "`" -or [char]::IsWhiteSpace($s[-1]))) {
+              $s = $s.Substring(0, $s.Length - 1)
+            }
+            return $s
+          }
+
           function Run-SqlFile($sqlPath) {
             if (-not (Test-Path $sqlPath)) {
               Write-Host "ERROR: SQL file not found: $sqlPath"
@@ -56,23 +70,23 @@ jobs:
             return $exit
           }
 
-          function Resolve-IncludedPath($incPath, $driverPath) {
-            # strip surrounding quotes/backticks/spaces using a char array (avoids nested-quote parsing problems)
-            $incTrim = $incPath.Trim([char[]]@("'","`",'"'," "))
+          function Resolve-IncludedPath($incRaw, $driverPath) {
+            $incTrim = Clean-IncludedPath $incRaw
+            if (-not $incTrim) { return $null }
 
-            # If exists as given
+            # 1) as provided
             if (Test-Path $incTrim) { return (Resolve-Path $incTrim).Path }
 
-            # Try repo root relative
+            # 2) repo-root relative
             $rootRel = Join-Path (Get-Location).Path $incTrim
             if (Test-Path $rootRel) { return (Resolve-Path $rootRel).Path }
 
-            # Try driver directory relative
+            # 3) relative to driver directory
             $driverDir = Split-Path -Parent $driverPath
             $rel = Join-Path $driverDir $incTrim
             if (Test-Path $rel) { return (Resolve-Path $rel).Path }
 
-            # Try removing leading ../ or ./ or .\
+            # 4) strip leading ./ or ../ and try root
             $norm = $incTrim -replace '^[\.\/\\]+',''
             $alt = Join-Path (Get-Location).Path $norm
             if (Test-Path $alt) { return (Resolve-Path $alt).Path }
@@ -93,19 +107,19 @@ jobs:
               $t = $line.Trim()
               if ($t -eq '') { continue }
 
-              # handle: source path/to/file.sql  (case-insensitive)
+              # source <path>
               if ($t.Length -ge 6 -and $t.Substring(0,6).ToLower() -eq 'source') {
                 $p = $t.Substring(6).Trim()
                 if ($p) { $includes += $p; continue }
               }
 
-              # handle: \. path/to/file.sql  or ./ or .\ path
+              # \. <path>  or ./path or .\path
               if ($t.Length -ge 2 -and ($t.StartsWith('\.') -or $t.StartsWith('./') -or $t.StartsWith('.\'))) {
                 $p = $t.Substring(2).Trim()
                 if ($p) { $includes += $p; continue }
               }
 
-              # handle: @path/to/file.sql
+              # @path
               if ($t.StartsWith('@')) {
                 $p = $t.Substring(1).Trim()
                 if ($p) { $includes += $p; continue }
@@ -132,10 +146,7 @@ jobs:
           }
 
           $changed = Get-Content changed_files.txt -ErrorAction SilentlyContinue
-          if (-not $changed) {
-            Write-Host "No changed files"
-            exit 0
-          }
+          if (-not $changed) { Write-Host "No changed files"; exit 0 }
 
           $backoutDrivers = $changed | Where-Object { $_ -match "(?i)backout_script\.sql$" }
           $releaseDrivers = $changed | Where-Object { $_ -match "(?i)release_script\.sql$" }
