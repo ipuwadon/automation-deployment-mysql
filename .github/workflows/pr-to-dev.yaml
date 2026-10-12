@@ -20,42 +20,135 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Detect changed files
+      - name: Detect changed files (PR SHAs)
         shell: powershell
         run: |
           $baseSha = "${{ github.event.pull_request.base.sha }}"
-          $headSha  = "${{ github.event.pull_request.head.sha }}"
-
+          $headSha = "${{ github.event.pull_request.head.sha }}"
           Write-Host "Base SHA: $baseSha"
           Write-Host "Head SHA: $headSha"
 
-          # Write as ASCII so findstr can read it
           git diff --name-only $baseSha $headSha | Out-File -FilePath changed_files.txt -Encoding ascii
-
           Write-Host "=== Changed files ==="
           Get-Content changed_files.txt
           Write-Host "=== End ==="
 
-      - name: Run backout driver scripts
-        shell: cmd
+      - name: Execute driver/control files and their included SQLs
+        shell: powershell
         run: |
-          findstr /I /C:"backout_script.sql" changed_files.txt > backout_driver.txt 2>nul || (
-            echo "No backout driver scripts detected"
-            exit /b 0
-          )
-          for /F "usebackq delims=" %%f in (backout_driver.txt) do (
-            echo Running backout driver: %%f
-            mysql -h %DB_HOST% -u %DB_USER% -p%DB_PASS% %DB_NAME% < "%%f"
-          )
+          # Helper: run a SQL file via mysql, streaming content through cmd to preserve exact CLI usage
+          function Run-SqlFile($sqlPath) {
+            if (-not (Test-Path $sqlPath)) {
+              Write-Host "ERROR: SQL file not found: $sqlPath"
+              return 1
+            }
+            Write-Host "== Executing SQL file: $sqlPath =="
+            # show first lines for debug (optional)
+            Get-Content $sqlPath -TotalCount 20 | ForEach-Object { Write-Host "`t$_" }
+            # Stream into mysql via cmd (so behaviour matches your previous runs)
+            $cmd = "mysql -h $env:DB_HOST -u $env:DB_USER -p$env:DB_PASS $env:DB_NAME"
+            # Use Get-Content piped into cmd
+            Get-Content $sqlPath -Raw | & cmd /c $cmd
+            $exit = $LASTEXITCODE
+            if ($exit -ne 0) {
+              Write-Host "mysql returned exit code $exit for $sqlPath"
+            } else {
+              Write-Host "Completed $sqlPath"
+            }
+            return $exit
+          }
 
-      - name: Run release driver scripts
-        shell: cmd
-        run: |
-          findstr /I /C:"release_script.sql" changed_files.txt > release_driver.txt 2>nul || (
-            echo "No release driver scripts detected"
-            exit /b 0
-          )
-          for /F "usebackq delims=" %%f in (release_driver.txt) do (
-            echo Running release driver: %%f
-            mysql -h %DB_HOST% -u %DB_USER% -p%DB_PASS% %DB_NAME% < "%%f"
-          )
+          # Read changed files and locate driver files
+          $changed = Get-Content changed_files.txt -ErrorAction SilentlyContinue
+          if (-not $changed) {
+            Write-Host "No changed files found"
+            exit 0
+          }
+
+          # Find driver/control files (adjust names if different)
+          $backoutDrivers = $changed | Where-Object { $_ -match "(?i)backout_script\.sql$" }
+          $releaseDrivers = $changed | Where-Object { $_ -match "(?i)release_script\.sql$" }
+
+          Write-Host "Backout drivers found: $($backoutDrivers.Count)"
+          Write-Host "Release drivers found: $($releaseDrivers.Count)"
+
+          $overallExit = 0
+
+          # Process a driver file: parse for 'source' or '\.' includes and run each included SQL (or run the driver itself if it contains SQL)
+          function Process-Driver($driverPath) {
+            Write-Host "`n-- Processing driver: $driverPath --"
+            if (-not (Test-Path $driverPath)) {
+              Write-Host "Driver file not found: $driverPath"
+              return 1
+            }
+
+            $content = Get-Content $driverPath -Raw
+
+            # Look for lines like: source path/to/file.sql    or    \. path/to/file.sql
+            $includeMatches = Select-String -InputObject $content -Pattern '^\s*(?:source|\\\.)\s+(.+)$' -AllMatches
+
+            if ($includeMatches.Count -eq 0) {
+              Write-Host "No 'source' includes detected in $driverPath — running the driver file directly"
+              return Run-SqlFile $driverPath
+            }
+
+            # For each include, extract path and try to resolve it
+            foreach ($m in $includeMatches) {
+              $raw = $m.Matches[0].Groups[1].Value.Trim()
+              # Trim surrounding quotes if present
+              $incPath = $raw.Trim("'`"" ")
+              # Try several resolution strategies:
+              $candidate = $null
+              # 1) If path is absolute or exists as-is
+              if (Test-Path $incPath) { $candidate = $incPath }
+              else {
+                # 2) Try relative to repo root (current working dir)
+                $rootRel = Join-Path (Get-Location).Path $incPath
+                if (Test-Path $rootRel) { $candidate = $rootRel }
+                else {
+                  # 3) Try relative to the driver file directory
+                  $driverDir = Split-Path -Parent $driverPath
+                  $rel = Join-Path $driverDir $incPath
+                  if (Test-Path $rel) { $candidate = $rel }
+                  else {
+                    # 4) Try removing any leading "../" and test
+                    $norm = $incPath -replace '^[\.\/\\]+',''
+                    $alt = Join-Path (Get-Location).Path $norm
+                    if (Test-Path $alt) { $candidate = $alt }
+                  }
+                }
+              }
+
+              if (-not $candidate) {
+                Write-Host "Included file not found for include line: '$raw' (driver: $driverPath)"
+                return 1
+              }
+
+              Write-Host "Found included SQL: $candidate"
+              $rc = Run-SqlFile $candidate
+              if ($rc -ne 0) { return $rc }
+            }
+
+            return 0
+          }
+
+          # Run backout drivers first
+          foreach ($d in $backoutDrivers) {
+            $rc = Process-Driver $d
+            if ($rc -ne 0) { $overallExit = $rc; break }
+          }
+
+          # If backouts ok, run releases
+          if ($overallExit -eq 0) {
+            foreach ($d in $releaseDrivers) {
+              $rc = Process-Driver $d
+              if ($rc -ne 0) { $overallExit = $rc; break }
+            }
+          }
+
+          if ($overallExit -ne 0) {
+            Write-Host "One or more SQL executions failed. Exit code: $overallExit"
+            exit $overallExit
+          } else {
+            Write-Host "All SQL executions completed successfully."
+          }
