@@ -43,12 +43,25 @@ jobs:
           Get-Content changed_files.txt
           Write-Host "=== End ==="
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.x'
+      - name: Verify Python is available on the runner
+        shell: powershell
+        run: |
+          if (Get-Command py -ErrorAction SilentlyContinue) {
+            py -3 --version
+          }
+          elseif (Get-Command python -ErrorAction SilentlyContinue) {
+            python --version
+          }
+          else {
+            throw "Python is not installed on this self-hosted runner. Install Python for the runner user or run the runner with an elevated account."
+          }
 
       - name: Run Python SQL runner
         shell: powershell
         run: |
-          python .github/scripts/run_sqls.py
+          if (Get-Command py -ErrorAction SilentlyContinue) {
+            py -3 .github/scripts/run_sqls.py
+          }
+          else {
+            python .github/scripts/run_sqls.py
+          }
