@@ -1,0 +1,67 @@
+name: MySQL Deployment - DEV
+
+on:
+  pull_request:
+    branches:
+      - dev
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+
+jobs:
+  deploy-dev:
+    if: ${{ github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.repo.fork == false && github.event.pull_request.draft == false }}
+    runs-on: self-hosted
+    permissions:
+      contents: read
+
+    env:
+      DB_HOST: ${{ secrets.DB_HOST }}
+      DB_USER: ${{ secrets.DB_USER }}
+      DB_PASS: ${{ secrets.DB_PASS }}
+      DB_NAME: ${{ secrets.DB_NAME }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: Detect changed files (PR SHAs)
+        shell: powershell
+        run: |
+          $baseSha = "${{ github.event.pull_request.base.sha }}"
+          $headSha  = "${{ github.event.pull_request.head.sha }}"
+          Write-Host "Base SHA: $baseSha"
+          Write-Host "Head SHA: $headSha"
+
+          git diff --name-only $baseSha $headSha | Out-File -FilePath changed_files.txt -Encoding ascii
+          Write-Host "=== Changed files ==="
+          Get-Content changed_files.txt
+          Write-Host "=== End ==="
+
+      - name: Verify Python is available on the runner
+        shell: powershell
+        run: |
+          if (Get-Command py -ErrorAction SilentlyContinue) {
+            py -3 --version
+          }
+          elseif (Get-Command python -ErrorAction SilentlyContinue) {
+            python --version
+          }
+          else {
+            throw "Python is not installed on this self-hosted runner. Install Python for the runner user or run the runner with an elevated account."
+          }
+
+      - name: Run Python SQL runner
+        shell: powershell
+        run: |
+          if (Get-Command py -ErrorAction SilentlyContinue) {
+            py -3 .github/scripts/run_sqls.py
+          }
+          else {
+            python .github/scripts/run_sqls.py
+          }
