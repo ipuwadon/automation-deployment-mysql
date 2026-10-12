@@ -3,7 +3,7 @@ name: MySQL Deployment - DEV
 on:
   pull_request:
     branches:
-      - dev
+      - main
 
 jobs:
   deploy-dev:
