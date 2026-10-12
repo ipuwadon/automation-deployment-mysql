@@ -41,7 +41,6 @@ jobs:
             Write-Host "`n== Executing SQL file: $sqlPath =="
             Get-Content $sqlPath -TotalCount 20 | ForEach-Object { Write-Host "`t$_" }
             $cmd = "mysql -h $env:DB_HOST -u $env:DB_USER -p$env:DB_PASS $env:DB_NAME"
-            # Stream SQL content into mysql via cmd
             try {
               Get-Content $sqlPath -Raw | & cmd /c $cmd
             } catch {
@@ -58,20 +57,26 @@ jobs:
           }
 
           function Resolve-IncludedPath($incPath, $driverPath) {
-            $incTrim = $incPath.Trim("'`"" ")  # strip common quotes
+            # strip surrounding quotes/backticks/spaces using a char array (avoids nested-quote parsing problems)
+            $incTrim = $incPath.Trim([char[]]@("'","`",'"'," "))
+
             # If exists as given
             if (Test-Path $incTrim) { return (Resolve-Path $incTrim).Path }
+
             # Try repo root relative
             $rootRel = Join-Path (Get-Location).Path $incTrim
             if (Test-Path $rootRel) { return (Resolve-Path $rootRel).Path }
+
             # Try driver directory relative
             $driverDir = Split-Path -Parent $driverPath
             $rel = Join-Path $driverDir $incTrim
             if (Test-Path $rel) { return (Resolve-Path $rel).Path }
-            # Try removing leading ../ or ./
-            $norm = $incTrim -replace '^[\.\/\\]+', ''
+
+            # Try removing leading ../ or ./ or .\
+            $norm = $incTrim -replace '^[\.\/\\]+',''
             $alt = Join-Path (Get-Location).Path $norm
             if (Test-Path $alt) { return (Resolve-Path $alt).Path }
+
             return $null
           }
 
@@ -83,22 +88,24 @@ jobs:
             }
 
             $lines = Get-Content $driverPath -ErrorAction Stop
-            # Find include lines:
             $includes = @()
             foreach ($line in $lines) {
               $t = $line.Trim()
               if ($t -eq '') { continue }
+
               # handle: source path/to/file.sql  (case-insensitive)
               if ($t.Length -ge 6 -and $t.Substring(0,6).ToLower() -eq 'source') {
                 $p = $t.Substring(6).Trim()
                 if ($p) { $includes += $p; continue }
               }
-              # handle: \. path/to/file.sql  or /. path
+
+              # handle: \. path/to/file.sql  or ./ or .\ path
               if ($t.Length -ge 2 -and ($t.StartsWith('\.') -or $t.StartsWith('./') -or $t.StartsWith('.\'))) {
                 $p = $t.Substring(2).Trim()
                 if ($p) { $includes += $p; continue }
               }
-              # handle: @path/to/file.sql (some users use @)
+
+              # handle: @path/to/file.sql
               if ($t.StartsWith('@')) {
                 $p = $t.Substring(1).Trim()
                 if ($p) { $includes += $p; continue }
@@ -130,7 +137,7 @@ jobs:
             exit 0
           }
 
-          $backoutDrivers = $changed | Where-Object { $_ -match "(?i)backout_script\.sql$" } 
+          $backoutDrivers = $changed | Where-Object { $_ -match "(?i)backout_script\.sql$" }
           $releaseDrivers = $changed | Where-Object { $_ -match "(?i)release_script\.sql$" }
 
           Write-Host "Backout drivers found: $($backoutDrivers.Count)"
