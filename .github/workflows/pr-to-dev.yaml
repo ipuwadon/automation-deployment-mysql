@@ -4,10 +4,18 @@ on:
   pull_request:
     branches:
       - dev
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
 
 jobs:
   deploy-dev:
+    if: ${{ github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.repo.fork == false && github.event.pull_request.draft == false }}
     runs-on: self-hosted
+    permissions:
+      contents: read
 
     env:
       DB_HOST: ${{ secrets.DB_HOST }}
@@ -16,161 +24,31 @@ jobs:
       DB_NAME: ${{ secrets.DB_NAME }}
 
     steps:
-      - uses: actions/checkout@v5
+      - name: Checkout
+        uses: actions/checkout@v5
         with:
+          ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
 
       - name: Detect changed files (PR SHAs)
         shell: powershell
         run: |
           $baseSha = "${{ github.event.pull_request.base.sha }}"
-          $headSha = "${{ github.event.pull_request.head.sha }}"
+          $headSha  = "${{ github.event.pull_request.head.sha }}"
+          Write-Host "Base SHA: $baseSha"
+          Write-Host "Head SHA: $headSha"
+
           git diff --name-only $baseSha $headSha | Out-File -FilePath changed_files.txt -Encoding ascii
           Write-Host "=== Changed files ==="
           Get-Content changed_files.txt
           Write-Host "=== End ==="
 
-      - name: Execute driver/control files and their included SQLs
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Run Python SQL runner
         shell: powershell
         run: |
-          function Clean-IncludedPath($p) {
-            if (-not $p) { return $p }
-            $s = $p.Trim()
-            # Remove leading quotes/backticks/spaces
-            while ($s.Length -gt 0 -and ($s[0] -eq '"' -or $s[0] -eq "'" -or $s[0] -eq "`" -or [char]::IsWhiteSpace($s[0]))) {
-              $s = $s.Substring(1)
-            }
-            # Remove trailing quotes/backticks/spaces
-            while ($s.Length -gt 0 -and ($s[-1] -eq '"' -or $s[-1] -eq "'" -or $s[-1] -eq "`" -or [char]::IsWhiteSpace($s[-1]))) {
-              $s = $s.Substring(0, $s.Length - 1)
-            }
-            return $s
-          }
-
-          function Run-SqlFile($sqlPath) {
-            if (-not (Test-Path $sqlPath)) {
-              Write-Host "ERROR: SQL file not found: $sqlPath"
-              return 1
-            }
-            Write-Host "`n== Executing SQL file: $sqlPath =="
-            Get-Content $sqlPath -TotalCount 20 | ForEach-Object { Write-Host "`t$_" }
-            $cmd = "mysql -h $env:DB_HOST -u $env:DB_USER -p$env:DB_PASS $env:DB_NAME"
-            try {
-              Get-Content $sqlPath -Raw | & cmd /c $cmd
-            } catch {
-              Write-Host "Exception while running mysql on $sqlPath : $_"
-              return 1
-            }
-            $exit = $LASTEXITCODE
-            if ($exit -ne 0) {
-              Write-Host "mysql returned exit code $exit for $sqlPath"
-            } else {
-              Write-Host "Completed $sqlPath"
-            }
-            return $exit
-          }
-
-          function Resolve-IncludedPath($incRaw, $driverPath) {
-            $incTrim = Clean-IncludedPath $incRaw
-            if (-not $incTrim) { return $null }
-
-            # 1) as provided
-            if (Test-Path $incTrim) { return (Resolve-Path $incTrim).Path }
-
-            # 2) repo-root relative
-            $rootRel = Join-Path (Get-Location).Path $incTrim
-            if (Test-Path $rootRel) { return (Resolve-Path $rootRel).Path }
-
-            # 3) relative to driver directory
-            $driverDir = Split-Path -Parent $driverPath
-            $rel = Join-Path $driverDir $incTrim
-            if (Test-Path $rel) { return (Resolve-Path $rel).Path }
-
-            # 4) strip leading ./ or ../ and try root
-            $norm = $incTrim -replace '^[\.\/\\]+',''
-            $alt = Join-Path (Get-Location).Path $norm
-            if (Test-Path $alt) { return (Resolve-Path $alt).Path }
-
-            return $null
-          }
-
-          function Process-Driver($driverPath) {
-            Write-Host "`n-- Processing driver: $driverPath --"
-            if (-not (Test-Path $driverPath)) {
-              Write-Host "Driver file not found: $driverPath"
-              return 1
-            }
-
-            $lines = Get-Content $driverPath -ErrorAction Stop
-            $includes = @()
-            foreach ($line in $lines) {
-              $t = $line.Trim()
-              if ($t -eq '') { continue }
-
-              # source <path>
-              if ($t.Length -ge 6 -and $t.Substring(0,6).ToLower() -eq 'source') {
-                $p = $t.Substring(6).Trim()
-                if ($p) { $includes += $p; continue }
-              }
-
-              # \. <path>  or ./path or .\path
-              if ($t.Length -ge 2 -and ($t.StartsWith('\.') -or $t.StartsWith('./') -or $t.StartsWith('.\'))) {
-                $p = $t.Substring(2).Trim()
-                if ($p) { $includes += $p; continue }
-              }
-
-              # @path
-              if ($t.StartsWith('@')) {
-                $p = $t.Substring(1).Trim()
-                if ($p) { $includes += $p; continue }
-              }
-            }
-
-            if ($includes.Count -eq 0) {
-              Write-Host "No include lines detected in $driverPath — running the driver file itself"
-              return Run-SqlFile $driverPath
-            }
-
-            foreach ($rawInc in $includes) {
-              $resolved = Resolve-IncludedPath $rawInc $driverPath
-              if (-not $resolved) {
-                Write-Host "Included file not found for include line: '$rawInc' (driver: $driverPath)"
-                return 1
-              }
-              Write-Host "Found included SQL: $resolved"
-              $rc = Run-SqlFile $resolved
-              if ($rc -ne 0) { return $rc }
-            }
-
-            return 0
-          }
-
-          $changed = Get-Content changed_files.txt -ErrorAction SilentlyContinue
-          if (-not $changed) { Write-Host "No changed files"; exit 0 }
-
-          $backoutDrivers = $changed | Where-Object { $_ -match "(?i)backout_script\.sql$" }
-          $releaseDrivers = $changed | Where-Object { $_ -match "(?i)release_script\.sql$" }
-
-          Write-Host "Backout drivers found: $($backoutDrivers.Count)"
-          Write-Host "Release drivers found: $($releaseDrivers.Count)"
-
-          $overallExit = 0
-
-          foreach ($d in $backoutDrivers) {
-            $rc = Process-Driver $d
-            if ($rc -ne 0) { $overallExit = $rc; break }
-          }
-
-          if ($overallExit -eq 0) {
-            foreach ($d in $releaseDrivers) {
-              $rc = Process-Driver $d
-              if ($rc -ne 0) { $overallExit = $rc; break }
-            }
-          }
-
-          if ($overallExit -ne 0) {
-            Write-Host "One or more SQL executions failed. Exit code: $overallExit"
-            exit $overallExit
-          } else {
-            Write-Host "All SQL executions completed successfully."
-          }
+          python .github/scripts/run_sqls.py
