@@ -27,6 +27,13 @@ DANGEROUS_SQL = re.compile(
     r"\bGRANT\b|\bREVOKE\b|\bDELETE\s+FROM\b|\bCALL\s+.*?xp_|"
     r"\bKILL\b|\bFLUSH\b|\bSHUTDOWN\b)"
 )
+CREATE_TABLE = re.compile(
+    r"(?is)\bCREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?`?([A-Za-z0-9_$]+)`?\s*(?=[(;])"
+)
+DROP_TABLE_IF_EXISTS = re.compile(
+    r"(?i)\bDROP\s+TABLE\s+IF\s+EXISTS\s+`?([A-Za-z0-9_$]+)`?(?![A-Za-z0-9_.$])"
+    r"(?=\s*(?:;|$))"
+)
 
 
 def die(msg, code=1):
@@ -131,13 +138,51 @@ def parse_includes(driver_file):
     return driver_abs, includes
 
 
-def contains_disallowed_sql(content):
+def remove_sql_comments(content):
     cleaned = re.sub(r"--.*?$", "", content, flags=re.MULTILINE)
-    cleaned = cleaned.replace("\r", " ")
+    cleaned = re.sub(r"/\*.*?\*/", "", cleaned, flags=re.DOTALL)
+    cleaned = re.sub(r"#.*?$", "", cleaned, flags=re.MULTILINE)
+    return cleaned.replace("\r", " ")
+
+
+def release_created_tables(drivers):
+    tables = set()
+    for driver in drivers:
+        driver_abs, includes = parse_includes(driver)
+        if driver_abs is None:
+            continue
+
+        sql_files = [driver_abs]
+        if includes:
+            sql_files = []
+            for include in includes:
+                resolved = resolve_path(clean_path(include), os.path.dirname(driver_abs))
+                if resolved:
+                    sql_files.append(resolved)
+
+        for path in sql_files:
+            try:
+                with open(path, "r", encoding="utf-8-sig", errors="ignore") as sql_file:
+                    tables.update(CREATE_TABLE.findall(remove_sql_comments(sql_file.read())))
+            except OSError as e:
+                print(f"Failed to read release SQL {path}: {e}")
+    return {table.lower() for table in tables}
+
+
+def contains_disallowed_sql(content, allowed_drop_tables=None):
+    cleaned = remove_sql_comments(content)
+    allowed_drop_tables = allowed_drop_tables or set()
+
+    def retain_unapproved_drop(match):
+        if match.group(1).lower() in allowed_drop_tables:
+            return ""
+        return match.group(0)
+
+    cleaned = DROP_TABLE_IF_EXISTS.sub(retain_unapproved_drop, cleaned)
     return bool(DANGEROUS_SQL.search(cleaned))
 
 
-def run_sql_file(path):
+def run_sql_file(path, allowed_drop_tables=None):
     print(f"\n--- Running SQL: {path}")
     if not is_safe_repo_path(path):
         print(f"Refusing to run SQL outside the repository: {path}")
@@ -149,7 +194,7 @@ def run_sql_file(path):
         print(f"Failed to read {path}: {e}")
         return 1
 
-    if contains_disallowed_sql(content):
+    if contains_disallowed_sql(content, allowed_drop_tables):
         print(f"Refusing to run SQL containing unsafe statements: {path}")
         return 1
 
@@ -166,6 +211,7 @@ def run_sql_file(path):
 
 
 overall_rc = 0
+allowed_backout_drops = release_created_tables(release_drivers)
 
 # process backout drivers first
 for d in backout_drivers:
@@ -174,7 +220,7 @@ for d in backout_drivers:
         overall_rc = 1
         break
     if not includes:
-        rc = run_sql_file(driver_abs)
+        rc = run_sql_file(driver_abs, allowed_backout_drops)
         if rc != 0:
             overall_rc = rc
             break
@@ -186,7 +232,7 @@ for d in backout_drivers:
                 print(f"Included file not found: {inc} (from {d})")
                 overall_rc = 1
                 break
-            rc = run_sql_file(resolved)
+            rc = run_sql_file(resolved, allowed_backout_drops)
             if rc != 0:
                 overall_rc = rc
                 break
