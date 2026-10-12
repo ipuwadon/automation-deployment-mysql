@@ -1,480 +1,134 @@
-# Automation Deploy MySQL
+# MySQL Automation Deployment
 
-## Overview
+This repository contains SQL files and GitHub Actions workflows for deploying MySQL changes to a development database. Deployments run from a Windows self-hosted GitHub Actions runner that has network access to the database.
 
-This project demonstrates a Proof of Concept (POC) for automating MySQL database deployment using:
+## Current workflows
 
-- GitHub Repository
-- GitHub Actions
-- Self-hosted Runner
-- MySQL Database
-- Environment Configuration (.env)
+| Workflow | Trigger | What it does |
+|---|---|---|
+| [PR to DEV](.github/workflows/pr-to-dev.yaml) | A pull request targeting `dev` is opened, updated, reopened, or marked ready for review | Finds changed `backout_script.sql` and `release_script.sql` drivers, runs backout SQL first, then release SQL |
+| [Deploy](.github/workflows/deploy.yaml) | A push to `main` | Runs `scripts/schema.sql`, then `scripts/migrations.sql` |
 
-The objective is to automate deployment of SQL scripts from source control to a MySQL development environment.
+The PR workflow runs **before the pull request is merged**. It only runs for non-draft pull requests from branches in this same repository; forked pull requests are skipped. It checks out the PR head commit and uses the self-hosted runner. Python and the MySQL command-line client (`mysql`) must already be installed and available to the runner account.
 
----
+The `main` workflow is separate from the PR-to-DEV workflow. It currently runs the schema and migration scripts on `main`; it does not use the PR driver-file discovery flow.
 
-## Project Goals
-
-Current scope:
-
-✅ Source Control for SQL Scripts
-
-✅ Automated Validation
-
-✅ Automated Deployment to DEV Environment
-
-✅ Deployment History Tracking
-
-Future scope:
-
-- Pull Request Approval Process
-- UAT Deployment
-- Production Deployment
-- Rollback Automation
-- Release Versioning
-
----
-
-## Architecture
+## Repository layout
 
 ```text
-Developer
-    │
-    ▼
-Feature Branch
-    │
-    ▼
-Git Push
-    │
-    ▼
-GitHub Repository
-    │
-    ▼
-GitHub Action
-    │
-    ▼
-Self-hosted Runner
-    │
-    ▼
-MySQL DEV Environment
+.
+├── .github/
+│   ├── scripts/
+│   │   └── run_sqls.py
+│   └── workflows/
+│       ├── deploy.yaml
+│       └── pr-to-dev.yaml
+├── events/
+├── feature/
+│   └── Test-PR-Dev/
+│       ├── backout_script.sql
+│       ├── release_script.sql
+│       ├── rollback/
+│       └── test/
+├── indexes/
+├── procedures/
+├── scripts/
+│   ├── migrations.sql
+│   └── schema.sql
+├── tables/
+├── triggers/
+└── views/
 ```
 
----
+The `events`, `indexes`, `procedures`, `tables`, `triggers`, and `views` folders are locations for database object SQL. `feature/<change>/` holds feature-specific deployment drivers and related rollback or test SQL.
 
-## Project Structure
+## Pull request deployment
 
-```text
-automation-deploy-mysql
-│
-├── .github
-│   └── workflows
-│       └── autodeploy.yml
-│
-├── releases
-│   └── projectA
-│       ├── release
-│       │   └── 001_create_customer.sql
-│       │
-│       ├── rollback
-│       │   └── 001_drop_customer.sql
-│       │
-│       └── test
-│           └── test_customer.sql
-│
-├── scripts
-│   └── deploy-dev.sh
-│
-├── .env.dev
-├── .gitignore
-└── README.md
-```
+### Driver files
 
----
+The PR workflow calculates the changed paths between the PR base and head commits. The runner looks for changed files whose names end with:
 
-## Branch Strategy
+- `backout_script.sql`
+- `release_script.sql`
 
-Current branch model:
+SQL statements are not deployed just because a `.sql` file changed; the changed PR must include one or both driver files for the runner to discover them.
 
-```text
-main
-│
-├── dev
-│
-├── feature/projectA
-├── feature/projectB
-└── feature/projectC
-```
-
-### Purpose
-
-| Branch | Description |
-|----------|----------|
-| main | Stable source code |
-| dev | Integration branch for deployment to DEV |
-| feature/* | Feature development branch |
-
----
-
-## Deployment Flow
-
-### 1. Development
-
-Developer creates or modifies database objects manually.
-
-Example:
+Drivers list SQL files to run. The current project uses MySQL `source` statements:
 
 ```sql
-CREATE TABLE customer (
-    customer_id INT PRIMARY KEY,
-    customer_name VARCHAR(100)
-);
+-- feature/my-change/release_script.sql
+source tables/my_table.sql
+source feature/my-change/test/my_table.sql
 ```
 
-Objects are created within:
+The runner also recognizes `source <path>`, `./<path>`, `.\<path>`, `\.<path>`, and `@<path>` include lines. Included files must resolve to files inside the checked-out repository.
+
+### Execution order
+
+For each changed backout driver, the runner executes its included SQL files (or the driver itself if it has no includes). Only if all backout drivers succeed does it execute the changed release drivers. It does not automatically execute the feature `test/` SQL as a separate test phase; a test file runs only if a driver includes it.
+
+**Important:** because backout runs before release, review the backout SQL carefully. It may alter or remove existing DEV objects before the release runs. The runner blocks several destructive statements, but permits `DROP TABLE IF EXISTS <table>` in a backout only when a matching `CREATE TABLE <table>` is found in the changed release driver's SQL. This is a narrow guard, not a complete SQL security parser or a substitute for review. Use a disposable development database while validating new deployment flows.
+
+## Database credentials and runner setup
+
+Configure these GitHub Actions repository secrets:
+
+| Secret | Used for |
+|---|---|
+| `DB_HOST` | MySQL server host |
+| `DB_USER` | Deployment account |
+| `DB_PASS` | Deployment account password |
+| `DB_NAME` | Database name required by the PR SQL runner |
+
+Do not put real credentials in SQL files, workflow files, or this README. Grant the deployment account only the permissions required for the target environment. Anyone able to run a qualifying same-repository PR workflow may cause the runner to execute SQL with the configured credentials, so protect write access to the repository and review PRs before allowing this workflow to run.
+
+The self-hosted runner must:
+
+1. Run on a Windows machine with access to the target MySQL server.
+2. Have Python 3 available as `py -3` or `python` to the runner service account.
+3. Have the MySQL client (`mysql`) on `PATH`.
+4. Be configured in GitHub to accept jobs for this repository.
+
+The PR workflow deliberately uses the runner's installed Python rather than `actions/setup-python`; this avoids setup-python's symbolic-link privilege issue on this runner.
+
+## Main-branch schema deployment
+
+The `Deploy` workflow invokes:
 
 ```text
-dev_user
+scripts/schema.sql
+scripts/migrations.sql
 ```
 
----
+in that order using the `DB_HOST`, `DB_USER`, and `DB_PASS` repository secrets. The scripts currently contain `USE dev;` in `migrations.sql`, but `schema.sql` does not select a database, and the workflow's MySQL commands do not pass a database name. Confirm the intended default database or add an explicit database selection before relying on this workflow.
 
-### 2. Prepare Release Package
+## Working with the repository
 
-Developer prepares:
-
-```text
-release script
-rollback script
-test script
-```
+1. Create a feature branch from the appropriate base branch.
+2. Add or update SQL under the relevant object or feature folder.
+3. Add/update the feature's `release_script.sql` and `backout_script.sql` drivers as appropriate.
+4. Check that each driver includes the intended SQL files using repository-relative paths.
+5. Open a pull request targeting `dev` and review the Actions run and SQL changes.
+6. Merge only after the deployment result and database state have been verified.
 
 Example:
 
 ```text
-projectA
-│
-├── release
-├── rollback
-└── test
+feature/add-example-table/
+├── backout_script.sql
+├── release_script.sql
+├── rollback/
+│   └── example_table.sql
+└── test/
+    └── example_table.sql
 ```
 
----
-
-### 3. Commit Changes
-
-```bash
-git add .
-git commit -m "Create customer table"
-```
-
----
-
-### 4. Push Feature Branch
-
-```bash
-git push origin feature/projectA
-```
-
-Future validation activities:
-
-- SQL file verification
-- Naming convention verification
-- Rollback file verification
-- Test script verification
-
----
-
-### 5. Create Pull Request
-
-```text
-feature/projectA
-        │
-        ▼
-       dev
-```
-
-Reviewer validates:
-
-- Release script
-- Rollback script
-- Test script
-
----
-
-### 6. Merge to DEV
-
-Merge triggers:
-
-```yaml
-on:
-  push:
-    branches:
-      - dev
-```
-
----
-
-### 7. Automatic Deployment
-
-GitHub Action executes:
-
-```text
-deploy-dev.sh
-```
-
-which connects to:
-
-```text
-MySQL
-```
-
-using:
-
-```text
-dev_user
-```
-
----
-
-## Environment Configuration
-
-File:
-
-```text
-.env.dev
-```
-
-Example:
-
-```properties
-DB_HOST=localhost
-DB_NAME=mydb
-
-DB_USER=dev_user
-DB_PASSWORD=password123
-```
-
-### Important
-
-Never commit environment files.
-
-Add to:
-
-```text
-.gitignore
-```
-
-```text
-.env*
-```
-
----
-
-## Deployment Script
-
-File:
-
-```text
-scripts/deploy-dev.sh
-```
-
-Example:
-
-```bash
-#!/bin/bash
-
-source .env.dev
-
-mysql \
--h $DB_HOST \
--u $DB_USER \
--p$DB_PASSWORD \
-$DB_NAME \
-< releases/projectA/release/001_create_customer.sql
-```
-
-### Purpose
-
-1. Load environment variables
-2. Connect to MySQL
-3. Execute release script
-
----
-
-## Execution
-
-Grant execution permission:
-
-```bash
-chmod +x scripts/deploy-dev.sh
-```
-
-Execute manually:
-
-```bash
-./scripts/deploy-dev.sh
-```
-
----
-
-## GitHub Workflow
-
-File:
-
-```text
-.github/workflows/autodeploy.yml
-```
-
-Example:
-
-```yaml
-name: Deploy DEV
-
-on:
-  push:
-    branches:
-      - dev
-
-jobs:
-  deploy:
-    runs-on: self-hosted
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Deploy SQL Script
-        run: |
-          ./scripts/deploy-dev.sh
-```
-
----
-
-## Self-hosted Runner
-
-Runner location:
-
-```text
-Developer Laptop
-or
-Linux VM
-or
-Windows Server
-```
-
-Purpose:
-
-- Receive GitHub Action job
-- Execute deployment script locally
-- Connect to MySQL
-
-Advantages:
-
-- No GitHub Action minute consumption
-- Full environment control
-- Direct access to internal databases
-
----
-
-## MySQL Users
-
-Current environment setup:
-
-```text
-dev_user
-```
-
-Future environment setup:
-
-```text
-dev_user
-uat_user
-prod_user
-```
-
----
-
-## Future Enhancements
-
-### Validation Workflow
-
-Before deployment:
-
-```text
-Check release script exists
-
-Check rollback script exists
-
-Check test script exists
-
-Verify naming convention
-```
-
----
-
-### Automated Testing
-
-Execute:
-
-```text
-Release Script
-        │
-        ▼
-Test Script
-        │
-        ▼
-Result Validation
-```
-
----
-
-### Rollback
-
-If deployment fails:
-
-```text
-Release Failure
-       │
-       ▼
-Execute Rollback
-```
-
----
-
-### Deployment History
-
-Table:
-
-```sql
-CREATE TABLE deployment_history (
-    release_id VARCHAR(100),
-    deployed_at DATETIME,
-    status VARCHAR(20)
-);
-```
-
-Purpose:
-
-- Audit deployment history
-- Prevent duplicate deployments
-- Support troubleshooting
-
----
-
-## Current Project Status
-
-### Completed
-
-- MySQL DEV User Created
-- GitHub Repository Created
-- Repository Cloned to Local Machine
-
-### In Progress
-
-- Repository Structure Setup
-- Deployment Script Development
-- Self-hosted Runner Configuration
-
-### Next Milestone
-
-- Deploy SQL Script Automatically After Merge to DEV Branch
+Keep rollback and test SQL clearly separated. Test SQL is not automatically invoked unless it is included by a driver.
+
+## Limitations and follow-up
+
+- The PR workflow executes against the configured database before merge; there is no separate approval/environment gate in the workflow currently.
+- SQL safety checks are pattern-based and do not parse all MySQL syntax or guarantee that a script is safe.
+- The workflow only discovers changed driver files; changing an included SQL file without changing its driver may not trigger execution.
+- The main-branch workflow's database selection should be made explicit.
+- Deployment history, automated test assertions, and UAT/production workflows are not currently implemented.
