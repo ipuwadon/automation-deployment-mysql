@@ -3,7 +3,7 @@ name: MySQL Deployment - DEV
 on:
   pull_request:
     branches:
-      - main
+      - dev
 
 jobs:
   deploy-dev:
@@ -24,50 +24,38 @@ jobs:
         shell: powershell
         run: |
           $baseSha = "${{ github.event.pull_request.base.sha }}"
-          $headSha = "${{ github.event.pull_request.head.sha }}"
+          $headSha  = "${{ github.event.pull_request.head.sha }}"
 
           Write-Host "Base SHA: $baseSha"
           Write-Host "Head SHA: $headSha"
 
-          $changed = git diff --name-only $baseSha $headSha
-          $changed | Out-File -FilePath changed_files.txt -Encoding ASCII
+          # Write as ASCII so findstr can read it
+          git diff --name-only $baseSha $headSha | Out-File -FilePath changed_files.txt -Encoding ascii
 
           Write-Host "=== Changed files ==="
           Get-Content changed_files.txt
           Write-Host "=== End ==="
 
-      - name: Run rollback scripts
+      - name: Run backout driver scripts
         shell: cmd
         run: |
-          findstr /R /C:"rollback/" changed_files.txt > rollback_files.txt 2>nul || (
-            echo "No rollback scripts detected"
+          findstr /I /C:"backout_script.sql" changed_files.txt > backout_driver.txt 2>nul || (
+            echo "No backout driver scripts detected"
             exit /b 0
           )
-          for /F "usebackq delims=" %%f in (rollback_files.txt) do (
-            echo Running rollback: %%f
+          for /F "usebackq delims=" %%f in (backout_driver.txt) do (
+            echo Running backout driver: %%f
             mysql -h %DB_HOST% -u %DB_USER% -p%DB_PASS% %DB_NAME% < "%%f"
           )
 
-      - name: Run release scripts
+      - name: Run release driver scripts
         shell: cmd
         run: |
-          findstr /R /C:"tables/" changed_files.txt > release_files.txt 2>nul || (
-            echo "No release scripts detected"
+          findstr /I /C:"release_script.sql" changed_files.txt > release_driver.txt 2>nul || (
+            echo "No release driver scripts detected"
             exit /b 0
           )
-          for /F "usebackq delims=" %%f in (release_files.txt) do (
-            echo Running release: %%f
-            mysql -h %DB_HOST% -u %DB_USER% -p%DB_PASS% %DB_NAME% < "%%f"
-          )
-
-      - name: Run test scripts
-        shell: cmd
-        run: |
-          findstr /R /C:"test/" changed_files.txt > test_files.txt 2>nul || (
-            echo "No test scripts detected"
-            exit /b 0
-          )
-          for /F "usebackq delims=" %%f in (test_files.txt) do (
-            echo Running test: %%f
+          for /F "usebackq delims=" %%f in (release_driver.txt) do (
+            echo Running release driver: %%f
             mysql -h %DB_HOST% -u %DB_USER% -p%DB_PASS% %DB_NAME% < "%%f"
           )
