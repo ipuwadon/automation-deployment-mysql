@@ -1,3 +1,3 @@
--- Dev environment ------------------
--- Table ----------------------------
-@../feature/Test-PR-Dev/rollback/test_table.sql
+-- Dev environment Backout ------------------
+-- Table ------------------------------------
+source feature/Test-PR-Dev/rollback/test_table.sql
