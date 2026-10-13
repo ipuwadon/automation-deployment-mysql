@@ -67,7 +67,18 @@ The runner also recognizes `source <path>`, `./<path>`, `.\<path>`, `\.<path>`, 
 
 For each changed backout driver, the runner executes its included SQL files (or the driver itself if it has no includes). Only if all backout drivers succeed does it execute the changed release drivers. It does not automatically execute the feature `test/` SQL as a separate test phase; a test file runs only if a driver includes it.
 
-**Important:** because backout runs before release, review the backout SQL carefully. It may alter or remove existing DEV objects before the release runs. The runner blocks several destructive statements, but permits `DROP TABLE IF EXISTS <table>` in a backout only when a matching `CREATE TABLE <table>` is found in the changed release driver's SQL. This is a narrow guard, not a complete SQL security parser or a substitute for review. Use a disposable development database while validating new deployment flows.
+**Important:** because backout runs before release, review the backout SQL carefully. It may alter or remove existing DEV objects before the release runs.
+
+The runner blocks destructive statements by default, but approves a statement when it targets an object the release itself defines. It scans the release driver's SQL (the changed release drivers, plus each backout driver's sibling `release_script.sql` even when that file is unchanged) and collects every `CREATE TABLE`, `CREATE VIEW`, `CREATE PROCEDURE`, `CREATE FUNCTION`, `CREATE TRIGGER`, and `CREATE EVENT` name, along with every table the release writes to via `INSERT INTO` / `REPLACE INTO`. Given that set, it allows:
+
+- `DROP TABLE`, `DROP VIEW`, `DROP PROCEDURE`, `DROP FUNCTION`, `DROP TRIGGER`, and `DROP EVENT` (with or without `IF EXISTS`, including comma-separated lists) when every named object is created by the release.
+- `DELETE FROM <table>` and `TRUNCATE TABLE <table>` when the release creates or populates that table.
+
+Everything else remains blocked, including `DROP DATABASE`/`DROP SCHEMA`, user management, `GRANT`/`REVOKE`, `FLUSH`, `KILL`, `SHUTDOWN`, and any drop or delete aimed at an object the release does not define. A schema-qualified name is accepted only when the qualifier matches `DB_NAME`, so a backout cannot reach another schema. The same allowance applies to release SQL, so a release may drop and recreate its own objects on re-run. When a statement is refused, the runner prints the blocked fragment.
+
+This is a pattern-based guard, not a complete SQL security parser or a substitute for review. Use a disposable development database while validating new deployment flows.
+
+Write rollback SQL in dependency-safe order — drop views and procedures first, then child tables before parent tables, and delete child rows before parent rows — and prefer `IF EXISTS` so a backout succeeds on a database where the objects are not present yet.
 
 ## Database credentials and runner setup
 

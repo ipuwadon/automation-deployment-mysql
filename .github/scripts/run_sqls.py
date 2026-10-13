@@ -22,18 +22,63 @@ CHANGED_FILE = os.path.join(WORKDIR, "changed_files.txt")
 BACKOUT_NAME = "backout_script.sql"
 RELEASE_NAME = "release_script.sql"
 DANGEROUS_SQL = re.compile(
-    r"(?is)(?:\bDROP\s+(?:DATABASE|SCHEMA|TABLE|VIEW|PROCEDURE|TRIGGER|EVENT)\b|"
+    r"(?is)(?:\bDROP\s+(?:DATABASE|SCHEMA|TABLE|VIEW|PROCEDURE|FUNCTION|TRIGGER|EVENT)\b|"
     r"\bTRUNCATE\s+TABLE\b|\bALTER\s+USER\b|\bCREATE\s+USER\b|\bDROP\s+USER\b|"
     r"\bGRANT\b|\bREVOKE\b|\bDELETE\s+FROM\b|\bCALL\s+.*?xp_|"
     r"\bKILL\b|\bFLUSH\b|\bSHUTDOWN\b)"
 )
-CREATE_TABLE = re.compile(
-    r"(?is)\bCREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?`?([A-Za-z0-9_$]+)`?\s*(?=[(;])"
+
+# Object names may be bare, backtick-quoted, and optionally schema-qualified.
+OBJECT_NAME = r"(?:`[^`]+`|[A-Za-z0-9_$]+)"
+QUALIFIED_NAME = r"(?:{n}\s*\.\s*)?{n}".format(n=OBJECT_NAME)
+NAME_LIST = r"{q}(?:\s*,\s*{q})*".format(q=QUALIFIED_NAME)
+QUALIFIED_NAME_RE = re.compile(QUALIFIED_NAME)
+NAME_TOKEN_RE = re.compile(r"`([^`]+)`|([A-Za-z0-9_$]+)")
+
+DEFINER = r"(?:DEFINER\s*=\s*\S+\s+)?"
+CREATE_PATTERNS = {
+    "table": re.compile(
+        r"(?is)\bCREATE\s+(?:TEMPORARY\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?({q})".format(q=QUALIFIED_NAME)
+    ),
+    "view": re.compile(
+        r"(?is)\bCREATE\s+(?:OR\s+REPLACE\s+)?(?:ALGORITHM\s*=\s*\w+\s+)?{d}"
+        r"(?:SQL\s+SECURITY\s+(?:DEFINER|INVOKER)\s+)?VIEW\s+(?:IF\s+NOT\s+EXISTS\s+)?({q})".format(
+            d=DEFINER, q=QUALIFIED_NAME
+        )
+    ),
+    "procedure": re.compile(
+        r"(?is)\bCREATE\s+{d}PROCEDURE\s+(?:IF\s+NOT\s+EXISTS\s+)?({q})".format(d=DEFINER, q=QUALIFIED_NAME)
+    ),
+    "function": re.compile(
+        r"(?is)\bCREATE\s+{d}(?:AGGREGATE\s+)?FUNCTION\s+(?:IF\s+NOT\s+EXISTS\s+)?({q})".format(
+            d=DEFINER, q=QUALIFIED_NAME
+        )
+    ),
+    "trigger": re.compile(
+        r"(?is)\bCREATE\s+{d}TRIGGER\s+(?:IF\s+NOT\s+EXISTS\s+)?({q})".format(d=DEFINER, q=QUALIFIED_NAME)
+    ),
+    "event": re.compile(
+        r"(?is)\bCREATE\s+{d}EVENT\s+(?:IF\s+NOT\s+EXISTS\s+)?({q})".format(d=DEFINER, q=QUALIFIED_NAME)
+    ),
+}
+ROW_WRITE_PATTERNS = (
+    re.compile(
+        r"(?is)\bINSERT\s+(?:LOW_PRIORITY\s+|DELAYED\s+|HIGH_PRIORITY\s+|IGNORE\s+)*INTO\s+({q})".format(
+            q=QUALIFIED_NAME
+        )
+    ),
+    re.compile(
+        r"(?is)\bREPLACE\s+(?:LOW_PRIORITY\s+|DELAYED\s+)*INTO\s+({q})".format(q=QUALIFIED_NAME)
+    ),
 )
-DROP_TABLE_IF_EXISTS = re.compile(
-    r"(?i)\bDROP\s+TABLE\s+IF\s+EXISTS\s+`?([A-Za-z0-9_$]+)`?(?![A-Za-z0-9_.$])"
-    r"(?=\s*(?:;|$))"
+DROP_OBJECT = re.compile(
+    r"(?is)\bDROP\s+(TABLE|VIEW|PROCEDURE|FUNCTION|TRIGGER|EVENT)\s+(?:IF\s+EXISTS\s+)?({l})".format(l=NAME_LIST)
 )
+DELETE_FROM = re.compile(
+    r"(?is)\bDELETE\s+(?:LOW_PRIORITY\s+|QUICK\s+|IGNORE\s+)*FROM\s+({q})".format(q=QUALIFIED_NAME)
+)
+TRUNCATE_TABLE = re.compile(r"(?is)\bTRUNCATE\s+TABLE\s+({q})".format(q=QUALIFIED_NAME))
+OBJECT_KINDS = tuple(CREATE_PATTERNS) + ("rows",)
 
 
 def die(msg, code=1):
@@ -145,44 +190,119 @@ def remove_sql_comments(content):
     return cleaned.replace("\r", " ")
 
 
-def release_created_tables(drivers):
-    tables = set()
+def split_qualified_name(raw):
+    return [m.group(1) if m.group(1) is not None else m.group(2) for m in NAME_TOKEN_RE.finditer(raw)]
+
+
+def resolve_object_name(raw):
+    """
+    Normalize an object name to a bare lowercase name.
+
+    Returns None when the name is schema-qualified with anything other than the
+    target database, so a backout can never reach another schema.
+    """
+    tokens = split_qualified_name(raw or "")
+    if not tokens or len(tokens) > 2:
+        return None
+    if len(tokens) == 2:
+        schema, name = tokens
+        if not DB_NAME or schema.lower() != DB_NAME.lower():
+            return None
+        return name.lower()
+    return tokens[0].lower()
+
+
+def driver_sql_files(driver):
+    """Return the SQL files a driver executes (its includes, or the driver itself)."""
+    driver_abs, includes = parse_includes(driver)
+    if driver_abs is None:
+        return []
+    if not includes:
+        return [driver_abs]
+    resolved_files = []
+    for include in includes:
+        resolved = resolve_path(clean_path(include), os.path.dirname(driver_abs))
+        if resolved:
+            resolved_files.append(resolved)
+    return resolved_files
+
+
+def companion_release_drivers(backout_list):
+    """Find each backout driver's sibling release driver, even when it is unchanged."""
+    companions = []
+    for driver in backout_list:
+        driver_abs = driver if os.path.isabs(driver) else os.path.join(WORKDIR, driver)
+        candidate = os.path.join(os.path.dirname(os.path.abspath(driver_abs)), RELEASE_NAME)
+        if is_safe_repo_path(candidate) and os.path.exists(candidate) and candidate not in companions:
+            companions.append(candidate)
+    return companions
+
+
+def collect_released_objects(drivers):
+    """
+    Map each object kind to the names the release creates, plus the tables it
+    populates. A backout may only drop or clear objects found here.
+    """
+    objects = {kind: set() for kind in OBJECT_KINDS}
+    seen_files = set()
     for driver in drivers:
-        driver_abs, includes = parse_includes(driver)
-        if driver_abs is None:
-            continue
-
-        sql_files = [driver_abs]
-        if includes:
-            sql_files = []
-            for include in includes:
-                resolved = resolve_path(clean_path(include), os.path.dirname(driver_abs))
-                if resolved:
-                    sql_files.append(resolved)
-
-        for path in sql_files:
+        for path in driver_sql_files(driver):
+            key = os.path.normcase(os.path.abspath(path))
+            if key in seen_files:
+                continue
+            seen_files.add(key)
             try:
                 with open(path, "r", encoding="utf-8-sig", errors="ignore") as sql_file:
-                    tables.update(CREATE_TABLE.findall(remove_sql_comments(sql_file.read())))
+                    content = remove_sql_comments(sql_file.read())
             except OSError as e:
                 print(f"Failed to read release SQL {path}: {e}")
-    return {table.lower() for table in tables}
+                continue
+            for kind, pattern in CREATE_PATTERNS.items():
+                for raw in pattern.findall(content):
+                    name = resolve_object_name(raw)
+                    if name:
+                        objects[kind].add(name)
+            for pattern in ROW_WRITE_PATTERNS:
+                for raw in pattern.findall(content):
+                    name = resolve_object_name(raw)
+                    if name:
+                        objects["rows"].add(name)
+    # Any table the release creates may also have its rows cleared by the backout.
+    objects["rows"].update(objects["table"])
+    return objects
 
 
-def contains_disallowed_sql(content, allowed_drop_tables=None):
+def describe_allowed_objects(allowed_objects):
+    summary = {kind: sorted(names) for kind, names in allowed_objects.items() if names}
+    return summary or "none"
+
+
+def find_disallowed_sql(content, allowed_objects=None):
+    """Return the first blocked statement fragment, or None when the SQL is allowed."""
     cleaned = remove_sql_comments(content)
-    allowed_drop_tables = allowed_drop_tables or set()
+    allowed_objects = allowed_objects or {}
 
-    def retain_unapproved_drop(match):
-        if match.group(1).lower() in allowed_drop_tables:
-            return ""
+    def approve_drop(match):
+        permitted = allowed_objects.get(match.group(1).lower(), set())
+        names = [resolve_object_name(raw) for raw in QUALIFIED_NAME_RE.findall(match.group(2))]
+        if names and all(name in permitted for name in names):
+            return " "
         return match.group(0)
 
-    cleaned = DROP_TABLE_IF_EXISTS.sub(retain_unapproved_drop, cleaned)
-    return bool(DANGEROUS_SQL.search(cleaned))
+    def approve_row_change(match):
+        name = resolve_object_name(match.group(1))
+        if name and name in allowed_objects.get("rows", set()):
+            return " "
+        return match.group(0)
+
+    cleaned = DROP_OBJECT.sub(approve_drop, cleaned)
+    cleaned = DELETE_FROM.sub(approve_row_change, cleaned)
+    cleaned = TRUNCATE_TABLE.sub(approve_row_change, cleaned)
+    match = DANGEROUS_SQL.search(cleaned)
+    return " ".join(match.group(0).split()) if match else None
 
 
-def run_sql_file(path, allowed_drop_tables=None):
+def run_sql_file(path, allowed_objects=None):
     print(f"\n--- Running SQL: {path}")
     if not is_safe_repo_path(path):
         print(f"Refusing to run SQL outside the repository: {path}")
@@ -194,8 +314,10 @@ def run_sql_file(path, allowed_drop_tables=None):
         print(f"Failed to read {path}: {e}")
         return 1
 
-    if contains_disallowed_sql(content, allowed_drop_tables):
+    blocked = find_disallowed_sql(content, allowed_objects)
+    if blocked:
         print(f"Refusing to run SQL containing unsafe statements: {path}")
+        print(f"Blocked statement: {blocked}")
         return 1
 
     cmd = ["mysql", "-h", DB_HOST, "-u", DB_USER, f"-p{DB_PASS}", DB_NAME]
@@ -211,7 +333,8 @@ def run_sql_file(path, allowed_drop_tables=None):
 
 
 overall_rc = 0
-allowed_backout_drops = release_created_tables(release_drivers)
+allowed_objects = collect_released_objects(release_drivers + companion_release_drivers(backout_drivers))
+print("Objects created by the release:", describe_allowed_objects(allowed_objects))
 
 # process backout drivers first
 for d in backout_drivers:
@@ -220,7 +343,7 @@ for d in backout_drivers:
         overall_rc = 1
         break
     if not includes:
-        rc = run_sql_file(driver_abs, allowed_backout_drops)
+        rc = run_sql_file(driver_abs, allowed_objects)
         if rc != 0:
             overall_rc = rc
             break
@@ -232,7 +355,7 @@ for d in backout_drivers:
                 print(f"Included file not found: {inc} (from {d})")
                 overall_rc = 1
                 break
-            rc = run_sql_file(resolved, allowed_backout_drops)
+            rc = run_sql_file(resolved, allowed_objects)
             if rc != 0:
                 overall_rc = rc
                 break
@@ -247,7 +370,7 @@ if overall_rc == 0:
             overall_rc = 1
             break
         if not includes:
-            rc = run_sql_file(driver_abs)
+            rc = run_sql_file(driver_abs, allowed_objects)
             if rc != 0:
                 overall_rc = rc
                 break
@@ -259,7 +382,7 @@ if overall_rc == 0:
                     print(f"Included file not found: {inc} (from {d})")
                     overall_rc = 1
                     break
-                rc = run_sql_file(resolved)
+                rc = run_sql_file(resolved, allowed_objects)
                 if rc != 0:
                     overall_rc = rc
                     break

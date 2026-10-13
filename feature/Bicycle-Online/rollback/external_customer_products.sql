@@ -1,0 +1,1 @@
+DROP VIEW IF EXISTS external_customer_products;
