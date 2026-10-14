@@ -1,0 +1,1 @@
+DROP PROCEDURE IF EXISTS customer_product_summary;
