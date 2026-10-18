@@ -15,13 +15,15 @@ jobs:
     if: ${{ github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.repo.fork == false && github.event.pull_request.draft == false }}
     runs-on: self-hosted
     permissions:
-      contents: read
+      contents: write  # commit generated unit tests back to the PR branch
 
     env:
       DB_HOST: ${{ secrets.DB_HOST }}
       DB_USER: ${{ secrets.DB_USER }}
       DB_PASS: ${{ secrets.DB_PASS }}
       DB_NAME: ${{ secrets.DB_NAME }}
+      QWEN_MODEL: qwen2.5-coder:1.5b
+      PYTHONIOENCODING: utf-8
 
     steps:
       - name: Checkout
@@ -48,13 +50,16 @@ jobs:
         run: |
           if (Get-Command py -ErrorAction SilentlyContinue) {
             py -3 --version
+            $exe = py -3 -c "import sys; print(sys.executable)"
           }
           elseif (Get-Command python -ErrorAction SilentlyContinue) {
             python --version
+            $exe = python -c "import sys; print(sys.executable)"
           }
           else {
             throw "Python is not installed on this self-hosted runner. Install Python for the runner user or run the runner with an elevated account."
           }
+          "PYTHON_EXE=$exe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Run Python SQL runner
         shell: powershell
@@ -65,3 +70,72 @@ jobs:
           else {
             python .github/scripts/run_sqls.py
           }
+
+      # ---------- AI procedure unit tests ----------
+      - name: Separate procedure-only diff
+        id: procedures
+        shell: powershell
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          & $env:PYTHON_EXE .github/scripts/detect_procedure_changes.py $env:BASE_SHA $env:HEAD_SHA
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Ensure Qwen model is available (Ollama)
+        if: steps.procedures.outputs.has_procedures == 'true'
+        shell: powershell
+        run: |
+          if (-not (Get-Command ollama -ErrorAction SilentlyContinue)) {
+            Write-Host "::warning::Ollama is not installed on this runner - only baseline checks will be generated."
+            exit 0
+          }
+          ollama pull $env:QWEN_MODEL
+          if ($LASTEXITCODE -ne 0) { Write-Host "::warning::Could not pull $env:QWEN_MODEL" }
+          exit 0
+
+      - name: Analyse procedures and generate unit tests with Qwen
+        if: steps.procedures.outputs.has_procedures == 'true'
+        shell: powershell
+        run: |
+          & $env:PYTHON_EXE .github/scripts/generate_unit_tests.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Execute unit tests and build markdown report
+        id: unit_tests
+        if: steps.procedures.outputs.has_procedures == 'true'
+        shell: powershell
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          & $env:PYTHON_EXE .github/scripts/run_unit_tests.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Commit unit tests and results to the PR branch
+        if: ${{ always() && steps.procedures.outputs.has_procedures == 'true' }}
+        shell: powershell
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898978+github-actions[bot]@users.noreply.github.com"
+          git add -- "feature/*/unit-test/*"
+          git diff --cached --quiet
+          if ($LASTEXITCODE -eq 0) { Write-Host "No unit-test changes to commit"; exit 0 }
+          git commit -m "chore(unit-test): AI generated procedure unit tests [skip ci]"
+          git push origin "HEAD:refs/heads/$env:HEAD_REF"
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::warning::Could not push unit tests (branch moved?). They are still available as an artifact."
+          }
+          exit 0
+
+      - name: Upload unit test artifacts
+        if: ${{ always() && steps.procedures.outputs.has_procedures == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: procedure-unit-tests-pr-${{ github.event.pull_request.number }}
+          path: |
+            feature/*/unit-test/
+            .unit-test-work/
+          include-hidden-files: true
+          if-no-files-found: ignore
