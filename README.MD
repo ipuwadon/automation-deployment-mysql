@@ -19,7 +19,8 @@ The `main` workflow is separate from the PR-to-DEV workflow. It currently runs t
 .
 ├── .github/
 │   ├── scripts/
-│   │   └── run_sqls.py
+│   │   ├── run_sqls.py
+│   │   └── run_sqls-guide.md
 │   └── workflows/
 │       ├── deploy.yaml
 │       └── pr-to-dev.yaml
@@ -52,6 +53,10 @@ The PR workflow calculates the changed paths between the PR base and head commit
 - `release_script.sql`
 
 SQL statements are not deployed just because a `.sql` file changed; the changed PR must include one or both driver files for the runner to discover them.
+
+For a detailed walkthrough of the runner, including its line-by-line control
+flow, safety rules, examples, and troubleshooting guidance, see
+[the `run_sqls.py` guide](.github/scripts/run_sqls-guide.md).
 
 Drivers list SQL files to run. The current project uses MySQL `source` statements:
 
